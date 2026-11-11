@@ -22,7 +22,8 @@ File header
 4 bytes: Magic number "BuRR" (encoded in ASCII)
 2 bytes: Byte order mark 0xFEFF to check endianness
 2 bytes: Version number, in case there are 65535 further versions of the format
-         (currently 0)
+         (0, or 1 for a VLR filter built with allowFalsePositive, whose queries
+         apply the filter salt; the layout is the same for both)
 
 Configuration options
 =====================

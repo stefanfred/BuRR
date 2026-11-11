@@ -997,12 +997,12 @@ bool BandingAddRangeMHC(BandingStorage *bs, Hasher &hasher, Iterator begin,
             assert(num_bits != 0);
 
             const ResultRowVLR rrOrig=rr;
-            // Salt the stored bits so that keys absent from a filter read back
-            // pseudo-random bits. Bit 0 of cr is always 1 (first coefficient), so
-            // salting with cr itself gives the lowest output bit a constant salt:
-            // a one-bit filter then only receives homogeneous equations, solves to
-            // zero, and reports every absent key as positive. Skip that bit.
-            rr^=static_cast<ResultRowVLR>(cr >> 1);
+            // Retrieval salts the whole value with cr. Filters use a per-bit
+            // salt instead (see VLRFilterSalt in hasher.hpp); it is 0 for retrieval.
+            if (!allowFalsePositive)
+                rr^=static_cast<ResultRowVLR>(cr);
+            const ResultRowVLR filter_salt =
+                allowFalsePositive ? static_cast<ResultRowVLR>(hasher.GetVLRFilterSalt(hash)) : 0;
 
             vlr_indeces.push_back(i);
             if constexpr (oneBitThresh)
@@ -1021,7 +1021,7 @@ bool BandingAddRangeMHC(BandingStorage *bs, Hasher &hasher, Iterator begin,
                     continue;
                 }
 
-                ResultRowVLR bitRow = (rr >> shift) & 0x1;
+                ResultRowVLR bitRow = ((rr >> shift) ^ (filter_salt >> bit)) & 0x1;
                 auto [success, row] = BandingAdd<kFCA1>(bs, start, cr, static_cast<ResultRow>(bitRow), ribbon_idx);
                 if (!success) {
                     assert(all_good);

@@ -21,6 +21,25 @@ namespace {
 struct DummyData {};
 } // namespace
 
+// Salt for VLR filters (AddRange with allowFalsePositive = true). Bit b is
+// XORed onto the b-th bit of a key's value at construction and at query time,
+// so a bit that was not stored for a key reads back as an independent coin
+// flip. Retrieval salts with the coefficient row instead, but that does not
+// work for filters: with kFirstCoeffAlwaysOne its lowest bit is always 1, so
+// every bit stored at position 0 becomes a homogeneous equation, and a
+// one-ribbon filter solves to zero and reports every key as present.
+// The salt must be independent of everything else derived from the hash
+// (start, coefficients, VLR index), hence a separate mixer (murmur3 fmix64).
+inline uint64_t VLRFilterSalt(uint64_t hash) {
+    uint64_t x = hash + 0x9e3779b97f4a7c15ULL;
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return x;
+}
+
 // Based on Peter Dillinger / Facebook's rocksdb::ribbon::StandardHasher
 template <typename Config>
 class Hasher {
@@ -57,6 +76,11 @@ public:
         } else {
             return Config::HashFn(key, seed_);
         }
+    }
+
+    // see VLRFilterSalt
+    inline uint64_t GetVLRFilterSalt(Hash hash) const {
+        return VLRFilterSalt(static_cast<uint64_t>(hash));
     }
 
     inline Index GetVLRIndex(Hash hash, Index num_ribbons) const {
@@ -224,6 +248,11 @@ public:
         // XXX why middle? why not most significant?
         return static_cast<hash_t>(
             (static_cast<__uint128_t>(mhc) * static_cast<__uint128_t>(fct_)) >> 32);
+    }
+
+    // see VLRFilterSalt
+    inline uint64_t GetVLRFilterSalt(hash_t hash) const {
+        return VLRFilterSalt(static_cast<uint64_t>(hash));
     }
 
     inline Index GetVLRIndex(hash_t hash, Index num_ribbons) const {
