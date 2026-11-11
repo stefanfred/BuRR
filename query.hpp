@@ -65,7 +65,8 @@ std::pair<bool,
                              typename SimpleSolutionStorage::ResultRow>> inline ShiftQueryHelper(
     typename Hasher::Hash hash, const Hasher &hasher,
     const SimpleSolutionStorage &sss, [[maybe_unused]] typename SimpleSolutionStorage::Index start_idx = 0,
-    [[maybe_unused]] typename SimpleSolutionStorage::Index num_bits = 0) {
+    [[maybe_unused]] typename SimpleSolutionStorage::Index num_bits = 0,
+    [[maybe_unused]] bool vlr_filter = false) {
 
     constexpr bool kUseVLR = SimpleSolutionStorage::kUseVLR;
     constexpr bool kVLRShareMeta = SimpleSolutionStorage::kVLRShareMeta;
@@ -103,6 +104,8 @@ std::pair<bool,
         Index num_ribbons = sss.GetNumRibbons();
         Index num_vlr_columns = std::min(num_ribbons, static_cast<Index>(sizeof(ResultRowVLR) * 8U));
         Index cur_ribbon = hasher.GetVLRIndex(hash, num_ribbons);
+        // 0 for retrieval, see VLRFilterSalt in hasher.hpp
+        const ResultRowVLR filter_salt = vlr_filter ? static_cast<ResultRowVLR>(hasher.GetVLRFilterSalt(hash)) : 0;
         if (num_bits == 0) {
             start_idx = 0;
             num_bits = num_vlr_columns;
@@ -123,6 +126,7 @@ std::pair<bool,
                 result ^= sss.GetResult(start_slot + i, cur_ribbon);
                 cr_copy ^= lsb;
             }
+            result ^= static_cast<ResultRow>((filter_salt >> _) & 1);
             result_vlr |= static_cast<ResultRowVLR>(result) << idx;
             ++cur_ribbon;
             cur_ribbon %= num_ribbons;
@@ -229,7 +233,8 @@ std::pair<bool,
 SimpleRetrievalQuery(const typename HashTraits<Hasher>::mhc_or_key_t &key,
                      const Hasher &hasher, const SimpleSolutionStorage &sss,
                      [[maybe_unused]] typename SimpleSolutionStorage::Index start_idx = 0,
-                     [[maybe_unused]] typename SimpleSolutionStorage::Index num_bits = 0) {
+                     [[maybe_unused]] typename SimpleSolutionStorage::Index num_bits = 0,
+                     [[maybe_unused]] bool vlr_filter = false) {
     const auto hash = hasher.GetHash(key);
     static_assert(sizeof(typename SimpleSolutionStorage::Index) ==
                       sizeof(typename Hasher::Index),
@@ -241,7 +246,7 @@ SimpleRetrievalQuery(const typename HashTraits<Hasher>::mhc_or_key_t &key,
     // don't query an empty ribbon, please
     assert(sss.GetNumSlots() >= Hasher::kCoeffBits);
 
-    return ShiftQueryHelper(hash, hasher, sss, start_idx, num_bits);
+    return ShiftQueryHelper(hash, hasher, sss, start_idx, num_bits, vlr_filter);
 }
 
 // General retrieval query a key from SimpleSolutionStorage.
@@ -307,7 +312,8 @@ InterleavedRetrievalQuery(const typename HashTraits<Hasher>::mhc_or_key_t &key,
                           const Hasher &hasher,
                           const InterleavedSolutionStorage &iss,
                           [[maybe_unused]] typename InterleavedSolutionStorage::Index start_idx = 0,
-                          [[maybe_unused]] typename InterleavedSolutionStorage::Index num_bits = 0) {
+                          [[maybe_unused]] typename InterleavedSolutionStorage::Index num_bits = 0,
+                          [[maybe_unused]] bool vlr_filter = false) {
     constexpr bool kUseVLR = InterleavedSolutionStorage::kUseVLR;
     constexpr bool kVLRShareMeta = InterleavedSolutionStorage::kVLRShareMeta;
     constexpr bool kVLRFlipOutputBits = InterleavedSolutionStorage::kVLRFlipOutputBits;
@@ -359,6 +365,8 @@ InterleavedRetrievalQuery(const typename HashTraits<Hasher>::mhc_or_key_t &key,
         Index num_ribbons = iss.GetNumRibbons();
         Index num_vlr_columns = std::min(num_ribbons, static_cast<Index>(sizeof(ResultRowVLR) * 8U));
         const Index start_ribbon = hasher.GetVLRIndex(hash, num_ribbons);
+        // 0 for retrieval, see VLRFilterSalt in hasher.hpp
+        const ResultRowVLR filter_salt = vlr_filter ? static_cast<ResultRowVLR>(hasher.GetVLRFilterSalt(hash)) : 0;
         ResultRowVLR value = 0;
         if (num_bits == 0) {
             start_idx = 0;
@@ -380,13 +388,17 @@ InterleavedRetrievalQuery(const typename HashTraits<Hasher>::mhc_or_key_t &key,
                 const CoeffRow cr_right = cr >> (kCoeffBits - start_bit);
                 sr ^= rocksdb::BitParity(iss.GetSegment(segment + 1, ribbon_idx) & cr_right);
             }
+            sr ^= static_cast<ResultRow>((filter_salt >> bit) & 1);
             value |= static_cast<ResultRowVLR>(sr) << index;
             if constexpr (kVLRFlipOutputBits)
                 ++index;
             else
                 --index;
         }
-        return std::make_pair(false, value^static_cast<ResultRowVLR>(cr));
+        // retrieval: undo the salt applied in BandingAddRangeMHC
+        if (!vlr_filter)
+            value ^= static_cast<ResultRowVLR>(cr);
+        return std::make_pair(false, value);
     } else {
         ResultRow sr = 0;
         const CoeffRow cr_left = cr << start_bit;

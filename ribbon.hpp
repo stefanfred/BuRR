@@ -166,8 +166,10 @@ public:
             typename std::iterator_traits<Iterator>::value_type>> *bump_vec, bool allowFalsePositive = false) {
         const auto input_size = end - begin;
 
-        if constexpr (kUseVLR)
+        if constexpr (kUseVLR) {
+            vlr_filter_ = allowFalsePositive;
             CalcRibbonSizesVLR(begin, end, allowFalsePositive);
+        }
 
         LOGC(Config::log) << "Constructing for " << storage_.GetNumSlots()
                           << " slots, " << storage_.GetNumStarts() << " starts, "
@@ -316,7 +318,7 @@ public:
         }
         if constexpr (kUseInterleavedSol) {
             if constexpr (kUseVLR)
-                return InterleavedRetrievalQuery(key, hasher_, sol_, start_idx, num_bits);
+                return InterleavedRetrievalQuery(key, hasher_, sol_, start_idx, num_bits, vlr_filter_);
             else
                 return InterleavedRetrievalQuery(key, hasher_, sol_);
         } else if constexpr (kUseCacheLineStorage) {
@@ -325,7 +327,7 @@ public:
             return SimpleRetrievalQuery(key, hasher_, sol_);
         } else {
             if constexpr (kUseVLR)
-                return SimpleRetrievalQuery(key, hasher_, storage_, start_idx, num_bits);
+                return SimpleRetrievalQuery(key, hasher_, storage_, start_idx, num_bits, vlr_filter_);
             else
                 return SimpleRetrievalQuery(key, hasher_, storage_);
         }
@@ -340,7 +342,7 @@ public:
         }
         if constexpr (kUseInterleavedSol) {
             if constexpr (kUseVLR)
-                return InterleavedRetrievalQuery(mhc, hasher_, sol_, start_idx, num_bits);
+                return InterleavedRetrievalQuery(mhc, hasher_, sol_, start_idx, num_bits, vlr_filter_);
             else
                 return InterleavedRetrievalQuery(mhc, hasher_, sol_);
         } else if constexpr (kUseCacheLineStorage) {
@@ -349,7 +351,7 @@ public:
             return SimpleRetrievalQuery(mhc, hasher_, sol_);
         } else {
             if constexpr (kUseVLR)
-                return SimpleRetrievalQuery(mhc, hasher_, storage_, start_idx, num_bits);
+                return SimpleRetrievalQuery(mhc, hasher_, storage_, start_idx, num_bits, vlr_filter_);
             else
                 return SimpleRetrievalQuery(mhc, hasher_, storage_);
         }
@@ -611,7 +613,8 @@ protected:
         os.write("BuRR", 4);
         uint16_t bom = 0xFEFF;
         os.write(reinterpret_cast<const char *>(&bom), sizeof(uint16_t));
-        uint16_t version = 0;
+        // version 1: VLR filter (built with allowFalsePositive, uses the filter salt)
+        uint16_t version = (kUseVLR && vlr_filter_) ? 1 : 0;
         os.write(reinterpret_cast<const char *>(&version), sizeof(uint16_t));
 
         char tmp = sizeof(CoeffRow);
@@ -673,7 +676,9 @@ protected:
             throw parse_error("invalid endianness specification");
         uint16_t version = 0;
         is.read(reinterpret_cast<char *>(&version), sizeof(uint16_t));
-        if (version != 0)
+        if (switchendian && !bswap_generic(version))
+            throw parse_error("error converting endianness of version");
+        if (version != 0 && !(kUseVLR && version == 1))
             throw parse_error("invalid version number");
 
         char tmp;
@@ -742,6 +747,7 @@ protected:
         // this has to call the overridden method in the child class so
         // all levels of the data structure are deserialized
         DeserializeIntern(is, switchendian, seed, 0, num_ribbons_);
+        SetVLRFilter(version == 1);
 
         // reset exception mask
         is.exceptions(mask);
@@ -766,9 +772,16 @@ protected:
     ssize_t num_bumped = 0;
     ssize_t empty_slots = 0;
 
+    // set on every level after deserialization
+    virtual void SetVLRFilter(bool vlr_filter) {
+        vlr_filter_ = vlr_filter;
+    }
+
     // actual data
     double slots_per_item_;
     Index num_ribbons_ = 1;
+    // VLR built with allowFalsePositive: queries must apply the filter salt
+    bool vlr_filter_ = false;
     BasicStorage<Config> storage_;
 
     template <bool /* cls */, bool /* int */, typename C>
@@ -1103,6 +1116,11 @@ protected:
             assert(num_ribbons == 1);
         Super::DeserializeIntern(is, switchendian, seed, idx, num_ribbons);
         child_ribbon_.DeserializeIntern(is, switchendian, seed + 1, idx + 1, num_ribbons);
+    }
+
+    void SetVLRFilter(bool vlr_filter) override {
+        Super::SetVLRFilter(vlr_filter);
+        child_ribbon_.SetVLRFilter(vlr_filter);
     }
 
     ribbon_filter<depth - 1, Config> child_ribbon_;
