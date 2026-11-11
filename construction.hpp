@@ -997,7 +997,12 @@ bool BandingAddRangeMHC(BandingStorage *bs, Hasher &hasher, Iterator begin,
             assert(num_bits != 0);
 
             const ResultRowVLR rrOrig=rr;
-            rr^=static_cast<ResultRowVLR>(cr);
+            // Salt the stored bits so that keys absent from a filter read back
+            // pseudo-random bits. Bit 0 of cr is always 1 (first coefficient), so
+            // salting with cr itself gives the lowest output bit a constant salt:
+            // a one-bit filter then only receives homogeneous equations, solves to
+            // zero, and reports every absent key as positive. Skip that bit.
+            rr^=static_cast<ResultRowVLR>(cr >> 1);
 
             vlr_indeces.push_back(i);
             if constexpr (oneBitThresh)

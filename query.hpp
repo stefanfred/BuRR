@@ -386,7 +386,8 @@ InterleavedRetrievalQuery(const typename HashTraits<Hasher>::mhc_or_key_t &key,
             else
                 --index;
         }
-        return std::make_pair(false, value^static_cast<ResultRowVLR>(cr));
+        // Must match the salt applied in BandingAddRangeMHC (construction.hpp).
+        return std::make_pair(false, value^static_cast<ResultRowVLR>(cr >> 1));
     } else {
         ResultRow sr = 0;
         const CoeffRow cr_left = cr << start_bit;
